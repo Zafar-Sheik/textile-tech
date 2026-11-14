@@ -3,7 +3,7 @@ import type { WeaveKind } from "./materials";
 /**
  * Procedural fabric surfaces. Each weave is described as a tileable height
  * field, from which we derive a normal map (3D relief), an albedo map (thread
- * level colour variation) and a shaded preview (2D swatches).
+ * level colour variation). 2D swatches use a separate, much smaller preview.
  */
 
 const SIZE = 512;
@@ -11,7 +11,6 @@ const SIZE = 512;
 export interface WeaveMaps {
   normal: HTMLCanvasElement;
   albedo: HTMLCanvasElement;
-  shade: HTMLCanvasElement;
 }
 
 function fract(n: number) {
@@ -118,6 +117,21 @@ const WOVEN: Partial<Record<WeaveKind, WovenSpec>> = {
     fuzz: 0.1,
     weftDrop: 0.45,
   },
+  herringbone: {
+    count: 64,
+    warpOver: (cx, cy) =>
+      mod(Math.floor(cx / 8) % 2 === 0 ? cx - cy : cx + cy, 4) < 2,
+    slub: 0.5,
+    fuzz: 0.3,
+    weftDrop: 0.3,
+  },
+  basket: {
+    count: 40,
+    warpOver: (cx, cy) => (Math.floor(cx / 2) + Math.floor(cy / 2)) % 2 === 0,
+    slub: 0.35,
+    fuzz: 0.1,
+    weftDrop: 0,
+  },
   satin: {
     count: 80,
     warpOver: (cx, cy) => mod(cx * 2 + cy, 5) !== 0,
@@ -132,6 +146,36 @@ function pile(u: number, v: number) {
   const tufts = noise(u * 180, v * 180, 180, 180);
   const crush = noise(u * 7, v * 7, 7, 7);
   return 0.35 * fibres + 0.35 * tufts + 0.3 * crush;
+}
+
+/** Corduroy: raised wales of pile running along the warp. */
+function cord(u: number, v: number) {
+  const wale = Math.pow(Math.abs(Math.sin(Math.PI * u * 14)), 0.55);
+  const fibres = hash2(u * SIZE, v * SIZE);
+  return wale * (0.8 + 0.2 * noise(u * 90, v * 90, 90, 90)) + 0.12 * fibres;
+}
+
+/** Jersey: columns of V-shaped knit stitches. */
+function knit(u: number, v: number) {
+  const x = u * 28;
+  const y = v * 36;
+  const fx = x - Math.floor(x);
+  const fy = y - Math.floor(y);
+  const strand = (centre: number) => {
+    const d = (fx - centre) / 0.15;
+    return Math.exp(-d * d);
+  };
+  const legs = Math.max(strand(0.24 + 0.2 * fy), strand(0.76 - 0.2 * fy));
+  return legs * (0.7 + 0.3 * Math.sin(Math.PI * fy)) + 0.06 * hash2(u * SIZE, v * SIZE);
+}
+
+/** Suede: a fine brushed nap with faint directional streaks. */
+function nap(u: number, v: number) {
+  return (
+    0.45 * noise(u * 220, v * 220, 220, 220) +
+    0.3 * noise(u * 48, v * 9, 48, 9) +
+    0.25 * hash2(u * SIZE, v * SIZE)
+  );
 }
 
 const GRAIN_CELLS = 26;
@@ -166,17 +210,27 @@ function grain(u: number, v: number) {
   return 0.7 * pebble * dome + 0.2 * noise(u * 5, v * 5, 5, 5) + 0.1 * pores;
 }
 
-function heightField(kind: WeaveKind): Float32Array {
-  const field = new Float32Array(SIZE * SIZE);
+const SURFACES: Partial<Record<WeaveKind, (u: number, v: number) => number>> = {
+  pile,
+  grain,
+  cord,
+  knit,
+  nap,
+};
+
+/** Samples the top-left `size` x `size` pixels of a weave's height field. */
+function heightField(kind: WeaveKind, size: number): Float32Array {
+  const field = new Float32Array(size * size);
   const spec = WOVEN[kind];
+  const surface = SURFACES[kind] ?? grain;
   let min = Infinity;
   let max = -Infinity;
-  for (let y = 0; y < SIZE; y++) {
-    for (let x = 0; x < SIZE; x++) {
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
       const u = (x + 0.5) / SIZE;
       const v = (y + 0.5) / SIZE;
-      const h = spec ? woven(u, v, spec) : kind === "pile" ? pile(u, v) : grain(u, v);
-      field[y * SIZE + x] = h;
+      const h = spec ? woven(u, v, spec) : surface(u, v);
+      field[y * size + x] = h;
       if (h < min) min = h;
       if (h > max) max = h;
     }
@@ -186,32 +240,29 @@ function heightField(kind: WeaveKind): Float32Array {
   return field;
 }
 
-function makeCanvas() {
+function makeCanvas(size: number) {
   const canvas = document.createElement("canvas");
-  canvas.width = SIZE;
-  canvas.height = SIZE;
+  canvas.width = size;
+  canvas.height = size;
   return canvas;
 }
 
+const RELIEF = 2.2;
 const cache = new Map<string, WeaveMaps>();
 
-/** Builds (once) the texture maps for a weave. Browser only. */
+/** Builds (once) the full-size texture maps for a weave. Browser only. */
 export function getWeaveMaps(kind: WeaveKind, contrast: number): WeaveMaps {
   const key = `${kind}:${contrast}`;
   const cached = cache.get(key);
   if (cached) return cached;
 
-  const field = heightField(kind);
-  const normal = makeCanvas();
-  const albedo = makeCanvas();
-  const shade = makeCanvas();
+  const field = heightField(kind, SIZE);
+  const normal = makeCanvas(SIZE);
+  const albedo = makeCanvas(SIZE);
   const nCtx = normal.getContext("2d")!;
   const aCtx = albedo.getContext("2d")!;
-  const sCtx = shade.getContext("2d")!;
   const nData = nCtx.createImageData(SIZE, SIZE);
   const aData = aCtx.createImageData(SIZE, SIZE);
-  const sData = sCtx.createImageData(SIZE, SIZE);
-  const relief = 2.2;
 
   for (let y = 0; y < SIZE; y++) {
     const up = mod(y - 1, SIZE) * SIZE;
@@ -221,8 +272,8 @@ export function getWeaveMaps(kind: WeaveKind, contrast: number): WeaveMaps {
       const right = mod(x + 1, SIZE);
       const row = y * SIZE;
       const h = field[row + x];
-      const dx = (field[row + right] - field[row + left]) * relief;
-      const dy = (field[down + x] - field[up + x]) * relief;
+      const dx = (field[row + right] - field[row + left]) * RELIEF;
+      const dy = (field[down + x] - field[up + x]) * RELIEF;
       // Tangent-space normal; canvas rows run opposite to texture V.
       const inv = 1 / Math.hypot(dx, dy, 1);
       const i = (row + x) * 4;
@@ -234,19 +285,51 @@ export function getWeaveMaps(kind: WeaveKind, contrast: number): WeaveMaps {
       const tone = (1 - contrast + contrast * h) * 255;
       aData.data[i] = aData.data[i + 1] = aData.data[i + 2] = tone;
       aData.data[i + 3] = 255;
-
-      // Preview lit from the top-left.
-      const lit = 0.5 + 0.5 * h * (0.6 + contrast) - (dx + dy) * 0.35;
-      const value = Math.min(1, Math.max(0.12, lit)) * 255;
-      sData.data[i] = sData.data[i + 1] = sData.data[i + 2] = value;
-      sData.data[i + 3] = 255;
     }
   }
   nCtx.putImageData(nData, 0, 0);
   aCtx.putImageData(aData, 0, 0);
-  sCtx.putImageData(sData, 0, 0);
 
-  const maps = { normal, albedo, shade };
+  const maps = { normal, albedo };
   cache.set(key, maps);
   return maps;
+}
+
+/** Side length of the shaded preview used for 2D swatches. */
+const THUMB = 192;
+const thumbCache = new Map<string, HTMLCanvasElement>();
+
+/**
+ * A small greyscale close-up of a weave, lit from the top-left. Only this
+ * corner of the height field is computed, so swatches cost a fraction of the
+ * full maps.
+ */
+export function getWeaveThumb(kind: WeaveKind, contrast: number): HTMLCanvasElement {
+  const key = `${kind}:${contrast}`;
+  const cached = thumbCache.get(key);
+  if (cached) return cached;
+
+  const field = heightField(kind, THUMB);
+  const canvas = makeCanvas(THUMB);
+  const ctx = canvas.getContext("2d")!;
+  const data = ctx.createImageData(THUMB, THUMB);
+  const last = THUMB - 1;
+  for (let y = 0; y < THUMB; y++) {
+    const up = Math.max(0, y - 1) * THUMB;
+    const down = Math.min(last, y + 1) * THUMB;
+    for (let x = 0; x < THUMB; x++) {
+      const row = y * THUMB;
+      const h = field[row + x];
+      const dx = (field[row + Math.min(last, x + 1)] - field[row + Math.max(0, x - 1)]) * RELIEF;
+      const dy = (field[down + x] - field[up + x]) * RELIEF;
+      const lit = 0.5 + 0.5 * h * (0.6 + contrast) - (dx + dy) * 0.35;
+      const value = Math.min(1, Math.max(0.12, lit)) * 255;
+      const i = (row + x) * 4;
+      data.data[i] = data.data[i + 1] = data.data[i + 2] = value;
+      data.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(data, 0, 0);
+  thumbCache.set(key, canvas);
+  return canvas;
 }

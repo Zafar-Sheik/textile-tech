@@ -9,34 +9,41 @@ import FabricCanvas from "@/components/fabric/FabricCanvas";
 import Swatch from "@/components/Swatch";
 import Wordmark from "@/components/Wordmark";
 import { stageTint } from "@/lib/color";
+import { FORMS, FORM_BY_ID, type FormId } from "@/lib/forms";
 import { MATERIALS, type MaterialId } from "@/lib/materials";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
 
 /** The looks the hero cloth cycles through. */
-const SHOWREEL: { id: MaterialId; swatch: number }[] = [
-  { id: "velvet", swatch: 0 },
-  { id: "silk", swatch: 4 },
-  { id: "linen", swatch: 0 },
-  { id: "satin", swatch: 2 },
-  { id: "denim", swatch: 1 },
-  { id: "wool", swatch: 3 },
-  { id: "leather", swatch: 0 },
-  { id: "cotton", swatch: 6 },
+const SHOWREEL: { id: MaterialId; swatch: number; form: FormId }[] = [
+  { id: "velvet", swatch: 0, form: "drape" },
+  { id: "jersey", swatch: 3, form: "shirt" },
+  { id: "silk", swatch: 4, form: "skirt" },
+  { id: "denim", swatch: 1, form: "trousers" },
+  { id: "linen", swatch: 0, form: "cushion" },
+  { id: "satin", swatch: 2, form: "drape" },
+  { id: "corduroy", swatch: 0, form: "trousers" },
+  { id: "lame", swatch: 0, form: "skirt" },
+  { id: "tweed", swatch: 3, form: "flat" },
+  { id: "flannel", swatch: 0, form: "shirt" },
 ];
+
+const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen", "Twenty"];
+const MATERIAL_COUNT = NUMBER_WORDS[MATERIALS.length] ?? String(MATERIALS.length);
+const FORM_COUNT = (NUMBER_WORDS[FORMS.length] ?? String(FORMS.length)).toLowerCase();
 
 const STEPS = [
   {
     title: "Choose a material",
-    body: "Eight fabrics, each with its own weave, weight and way of catching light. The cloth re-hangs itself to match.",
+    body: `${MATERIAL_COUNT} fabrics, each with its own weave, weight and way of catching light. The cloth re-hangs itself to match.`,
   },
   {
     title: "Dye it any colour",
     body: "Start from a range curated for that material, or dial in any shade. Each fabric remembers the colour you gave it.",
   },
   {
-    title: "Turn it in the light",
-    body: "Orbit and zoom the drape. See how matte cotton, glossy satin and deep velvet carry the very same hue differently.",
+    title: "Try it on a shape",
+    body: `See it ${FORM_COUNT} ways, from a hanging drape to a T-shirt, trousers or a cushion, in studio, daylight or evening light.`,
   },
 ];
 
@@ -155,8 +162,9 @@ export default function Landing() {
             </span>
           </h1>
           <p data-hero-fade className="mt-6 max-w-md text-lg leading-relaxed text-muted">
-            Pick a material, give it a colour, and watch a draped length of it
-            change in front of you — weave, sheen, fold and all.
+            Pick a material, give it a colour, and watch it change in front of
+            you as a drape, a shirt, trousers and more — weave, sheen, fold
+            and all.
           </p>
           <div data-hero-fade className="mt-8 flex flex-wrap items-center gap-4">
             <Link
@@ -175,11 +183,18 @@ export default function Landing() {
           data-hero-stage
           className="relative order-first h-[46dvh] min-h-[320px] lg:order-none lg:h-[82dvh]"
         >
-          <FabricCanvas materialId={current.id} color={swatch.hex} interactive={false} />
+          <FabricCanvas
+            materialId={current.id}
+            color={swatch.hex}
+            form={current.form}
+            interactive={false}
+          />
           <div className="absolute bottom-0 right-0 overflow-hidden text-right">
             <p data-look className="text-sm">
               <span className="font-display text-2xl">{material.name}</span>
-              <span className="ml-2 text-muted">in {swatch.name}</span>
+              <span className="ml-2 text-muted">
+                in {swatch.name}, {FORM_BY_ID[current.form].phrase}
+              </span>
             </p>
           </div>
         </div>
@@ -204,7 +219,7 @@ export default function Landing() {
       <section id="materials" className="px-5 py-20 lg:px-10 lg:py-32">
         <div data-reveal className="mb-12 flex flex-wrap items-end justify-between gap-6 lg:mb-16">
           <h2 className="font-display text-5xl leading-none tracking-tight lg:text-7xl">
-            Eight materials,
+            {MATERIAL_COUNT} materials,
             <br />
             <span className="italic">endless colour.</span>
           </h2>

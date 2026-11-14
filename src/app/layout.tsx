@@ -22,7 +22,7 @@ const display = Instrument_Serif({
 export const metadata: Metadata = {
   title: "Textile Tech — see the cloth before it's cut",
   description:
-    "Choose a material, choose its colour, and watch a 3D drape change in real time.",
+    "Choose a material, choose its colour, and see it live in 3D as a drape, a shirt, trousers and more.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { MaterialDef } from "@/lib/materials";
-import { getWeaveMaps } from "@/lib/weave";
+import { getWeaveThumb } from "@/lib/weave";
 
 /** A flat close-up of a material's weave, dyed in the given colour. */
-export default function Swatch({
+function Swatch({
   material,
   color,
   className = "",
@@ -31,7 +31,7 @@ export default function Swatch({
       if (canvas.height !== h) canvas.height = h;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      const { shade } = getWeaveMaps(material.weave, material.contrast);
+      const shade = getWeaveThumb(material.weave, material.contrast);
       // Screen pixels per texture pixel, so every swatch shows a dozen or so threads.
       const scale = (zoom * dpr) / 1.5;
       ctx.globalCompositeOperation = "source-over";
@@ -55,3 +55,5 @@ export default function Swatch({
 
   return <canvas ref={ref} className={className} aria-hidden="true" />;
 }
+
+export default memo(Swatch);

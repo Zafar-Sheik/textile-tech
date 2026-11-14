@@ -1,10 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { HexColorInput, HexColorPicker } from "react-colorful";
 import FabricCanvas from "@/components/fabric/FabricCanvas";
+import type { Snapshot } from "@/components/fabric/FabricScene";
 import Swatch from "@/components/Swatch";
 import Wordmark from "@/components/Wordmark";
 import {
@@ -16,23 +24,33 @@ import {
   stageTint,
   tonalRange,
 } from "@/lib/color";
-import { MATERIALS, MATERIAL_BY_ID, isMaterialId } from "@/lib/materials";
-import { useConfigurator } from "@/store/useConfigurator";
+import { FORMS, FORM_BY_ID, isFormId } from "@/lib/forms";
+import {
+  MATERIALS,
+  MATERIAL_BY_ID,
+  isMaterialId,
+  randomMaterial,
+} from "@/lib/materials";
+import { useConfigurator, type Lighting } from "@/store/useConfigurator";
 
 gsap.registerPlugin(useGSAP);
+
+const LIGHTINGS: { id: Lighting; name: string }[] = [
+  { id: "studio", name: "Studio" },
+  { id: "daylight", name: "Daylight" },
+  { id: "evening", name: "Evening" },
+];
 
 function Chip({
   hex,
   label,
   selected,
   onPick,
-  className = "",
 }: {
   hex: string;
   label: string;
   selected?: boolean;
   onPick: (hex: string) => void;
-  className?: string;
 }) {
   return (
     <button
@@ -41,7 +59,7 @@ function Chip({
       aria-label={label}
       aria-pressed={selected}
       onClick={() => onPick(hex)}
-      className={`relative aspect-square rounded-full border border-line transition-transform duration-200 hover:scale-110 ${className}`}
+      className="relative aspect-square rounded-full border border-line transition-transform duration-200 hover:scale-110"
       style={{ background: hex }}
     >
       {selected && (
@@ -51,30 +69,92 @@ function Chip({
   );
 }
 
+function Pill({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`shrink-0 rounded-full px-3.5 py-2 text-sm transition-colors ${
+        active ? "bg-ink text-paper" : "text-ink hover:bg-ink/10"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function Studio() {
   const materialId = useConfigurator((s) => s.materialId);
   const colors = useConfigurator((s) => s.colors);
-  const setMaterial = useConfigurator((s) => s.setMaterial);
-  const setColor = useConfigurator((s) => s.setColor);
-  const reset = useConfigurator((s) => s.reset);
+  const formId = useConfigurator((s) => s.formId);
+  const lighting = useConfigurator((s) => s.lighting);
+  const motion = useConfigurator((s) => s.motion);
+  const looks = useConfigurator((s) => s.looks);
+  const {
+    setMaterial,
+    setColor,
+    setForm,
+    setLighting,
+    setMotion,
+    saveLook,
+    removeLook,
+    applyLook,
+    reset,
+  } = useConfigurator.getState();
 
   const material = MATERIAL_BY_ID[materialId];
+  const form = FORM_BY_ID[formId];
   const color = colors[materialId];
-  const named = useMemo(() => colorName(color), [color]);
-  const tones = useMemo(() => tonalRange(color), [color]);
-  const partners = useMemo(() => harmonies(color), [color]);
+  // The 3D cloth follows the picker immediately; derived swatches may lag a frame.
+  const settled = useDeferredValue(color);
+  const named = useMemo(() => colorName(settled), [settled]);
+  const tones = useMemo(() => tonalRange(settled), [settled]);
+  const partners = useMemo(() => harmonies(settled), [settled]);
 
   const root = useRef<HTMLDivElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
+  const snapshot = useRef<Snapshot | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
 
-  // Deep links from the landing page: /studio?m=silk&c=1f4fa3
+  const onSnapshot = useCallback((fn: Snapshot | null) => {
+    snapshot.current = fn;
+  }, []);
+
+  // Restore saved looks, honour reduced motion, and read deep links such as
+  // /studio?m=silk&c=1f4fa3&v=skirt
   useEffect(() => {
+    const store = useConfigurator.getState();
+    void useConfigurator.persist.rehydrate();
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      store.setMotion(false);
+    }
     const params = new URLSearchParams(window.location.search);
     const m = params.get("m");
-    if (isMaterialId(m)) setMaterial(m);
+    if (isMaterialId(m)) store.setMaterial(m);
     const c = `#${params.get("c") ?? ""}`;
-    if (isValidHex(c)) setColor(c);
-  }, [setMaterial, setColor]);
+    if (isValidHex(c)) store.setColor(c);
+    const v = params.get("v");
+    if (isFormId(v)) store.setForm(v);
+  }, []);
+
+  // Keep the address bar shareable. Debounced: browsers throttle history calls.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const query = new URLSearchParams({ m: materialId, c: color.slice(1), v: formId });
+      window.history.replaceState(null, "", `?${query}`);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [materialId, color, formId]);
 
   useGSAP(
     () => {
@@ -102,11 +182,37 @@ export default function Studio() {
   );
 
   const surprise = () => {
-    const others = MATERIALS.filter((m) => m.id !== materialId);
-    const next = others[Math.floor(Math.random() * others.length)];
-    setMaterial(next.id);
+    setMaterial(randomMaterial(materialId));
     setColor(randomColor());
   };
+
+  const flash = (set: (value: boolean) => void) => {
+    set(true);
+    window.setTimeout(() => set(false), 1800);
+  };
+
+  const share = async () => {
+    const query = new URLSearchParams({ m: materialId, c: color.slice(1), v: formId });
+    const url = `${window.location.origin}${window.location.pathname}?${query}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      flash(setCopied);
+    } catch {
+      window.prompt("Copy this link", url);
+    }
+  };
+
+  const download = () => {
+    const dataUrl = snapshot.current?.(stageTint(color));
+    if (!dataUrl) return;
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = `${materialId}-${color.slice(1)}-${formId}.png`;
+    link.click();
+  };
+
+  const toolButton =
+    "rounded-full border border-ink/25 bg-paper/60 px-3.5 py-1.5 text-xs backdrop-blur transition-colors hover:border-ink";
 
   return (
     <div
@@ -115,41 +221,77 @@ export default function Studio() {
     >
       {/* Stage */}
       <section
-        className="relative h-[58dvh] min-h-[380px] overflow-hidden transition-colors duration-700 lg:h-auto"
+        className="relative h-[60dvh] min-h-[400px] overflow-hidden transition-colors duration-700 lg:h-auto"
         style={{ background: stageTint(color) }}
         aria-label="Live fabric preview"
       >
-        <div className="absolute inset-0 cursor-grab active:cursor-grabbing lg:left-[10%]">
-          <FabricCanvas materialId={materialId} color={color} />
+        <div className="absolute inset-0 cursor-grab active:cursor-grabbing lg:left-[8%]">
+          <FabricCanvas
+            materialId={materialId}
+            color={color}
+            form={formId}
+            lighting={lighting}
+            motion={motion}
+            onSnapshot={onSnapshot}
+          />
         </div>
 
-        <header className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between p-5 lg:p-8">
+        <header className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between gap-3 p-5 lg:p-8">
           <div className="pointer-events-auto">
             <Wordmark />
           </div>
-          <span className="eyebrow hidden sm:block">Drag to turn · scroll to zoom</span>
+          <div className="pointer-events-auto flex gap-2">
+            <button
+              type="button"
+              className={toolButton}
+              onClick={() => {
+                saveLook();
+                flash(setSaved);
+              }}
+            >
+              {saved ? "Saved" : "Save look"}
+            </button>
+            <button type="button" className={toolButton} onClick={share}>
+              {copied ? "Link copied" : "Share"}
+            </button>
+            <button type="button" className={toolButton} onClick={download}>
+              Snapshot
+            </button>
+          </div>
         </header>
 
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 hidden p-8 lg:block">
-          <p className="eyebrow mb-1">Now showing</p>
-          <div className="overflow-hidden">
-            <h1
-              ref={title}
-              className="font-display text-7xl leading-[0.95] tracking-tight"
-            >
-              {material.name}
-            </h1>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-6 p-3 lg:p-8">
+          <div className="hidden lg:block">
+            <p className="eyebrow mb-1">Now showing</p>
+            <div className="overflow-hidden">
+              <h1
+                ref={title}
+                className="font-display text-7xl leading-[0.95] tracking-tight"
+              >
+                {material.name}
+              </h1>
+            </div>
+            <p className="mt-3 flex items-center gap-2 text-sm">
+              <span
+                className="inline-block h-3.5 w-3.5 rounded-full border border-line"
+                style={{ background: color }}
+              />
+              <span>{named.exact ? named.name : `Custom, near ${named.name}`}</span>
+              <span className="font-mono text-xs uppercase text-muted">{color}</span>
+            </p>
           </div>
-          <p className="mt-3 flex items-center gap-2 text-sm">
-            <span
-              className="inline-block h-3.5 w-3.5 rounded-full border border-line"
-              style={{ background: color }}
-            />
-            <span>
-              {named.exact ? named.name : `Custom, near ${named.name}`}
-            </span>
-            <span className="font-mono text-xs uppercase text-muted">{color}</span>
-          </p>
+
+          <div
+            role="group"
+            aria-label="Shape to preview on"
+            className="pointer-events-auto flex max-w-full gap-1 overflow-x-auto rounded-full border border-ink/15 bg-paper/75 p-1 backdrop-blur"
+          >
+            {FORMS.map((f) => (
+              <Pill key={f.id} active={f.id === formId} onClick={() => setForm(f.id)}>
+                {f.name}
+              </Pill>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -174,9 +316,9 @@ export default function Studio() {
             <h2 id="material-heading" className="eyebrow">
               01 · Material
             </h2>
-            <span className="text-xs text-muted">{material.weaveLabel}</span>
+            <span className="text-xs text-muted">{MATERIALS.length} fabrics</span>
           </div>
-          <div className="grid grid-cols-4 gap-2.5 lg:grid-cols-4">
+          <div className="grid grid-cols-4 gap-x-2.5 gap-y-3">
             {MATERIALS.map((m) => {
               const active = m.id === materialId;
               return (
@@ -195,11 +337,11 @@ export default function Studio() {
                     <Swatch
                       material={m}
                       color={colors[m.id]}
-                      className="block aspect-square w-full rounded-[9px]"
+                      className="block aspect-[4/3] w-full rounded-[9px]"
                     />
                   </span>
                   <span
-                    className={`mt-1.5 block text-center text-xs ${
+                    className={`mt-1 block text-center text-xs ${
                       active ? "font-medium text-ink" : "text-muted"
                     }`}
                   >
@@ -296,6 +438,99 @@ export default function Studio() {
           </div>
         </section>
 
+        <section data-enter aria-labelledby="light-heading">
+          <h2 id="light-heading" className="eyebrow mb-4">
+            03 · Light &amp; motion
+          </h2>
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-4">
+            <div
+              role="group"
+              aria-label="Lighting"
+              className="flex gap-1 rounded-full border border-line p-1"
+            >
+              {LIGHTINGS.map((option) => (
+                <Pill
+                  key={option.id}
+                  active={option.id === lighting}
+                  onClick={() => setLighting(option.id)}
+                >
+                  {option.name}
+                </Pill>
+              ))}
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={motion}
+              onClick={() => setMotion(!motion)}
+              className="flex items-center gap-2.5 text-sm"
+            >
+              Motion
+              <span
+                className={`relative h-6 w-11 rounded-full transition-colors ${
+                  motion ? "bg-ink" : "bg-ink/20"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 h-5 w-5 rounded-full bg-paper transition-[left] ${
+                    motion ? "left-[22px]" : "left-0.5"
+                  }`}
+                />
+              </span>
+            </button>
+          </div>
+          <p className="mt-3 text-xs leading-relaxed text-muted">
+            The same dye reads differently in warm and cool light. Turn motion
+            off to save battery: the preview then redraws only when something
+            changes.
+          </p>
+        </section>
+
+        {looks.length > 0 && (
+          <section aria-labelledby="looks-heading">
+            <div className="mb-4 flex items-baseline justify-between">
+              <h2 id="looks-heading" className="eyebrow">
+                Saved looks
+              </h2>
+              <span className="text-xs text-muted">Kept on this device</span>
+            </div>
+            <ul className="grid grid-cols-2 gap-2.5">
+              {looks.map((look) => {
+                const saved = MATERIAL_BY_ID[look.materialId];
+                return (
+                  <li key={look.id} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => applyLook(look)}
+                      className="flex w-full items-center gap-3 rounded-xl border border-line p-1.5 pr-8 text-left transition-colors hover:border-ink"
+                    >
+                      <Swatch
+                        material={saved}
+                        color={look.color}
+                        className="h-11 w-11 shrink-0 rounded-lg"
+                      />
+                      <span className="min-w-0 text-xs leading-tight">
+                        <span className="block truncate text-sm">{saved.name}</span>
+                        <span className="block truncate text-muted">
+                          {FORM_BY_ID[look.formId].name}
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${saved.name} look`}
+                      onClick={() => removeLook(look.id)}
+                      className="absolute right-1.5 top-1/2 h-6 w-6 -translate-y-1/2 rounded-full text-muted hover:bg-ink/10 hover:text-ink"
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+
         <div data-enter className="mt-auto flex gap-3 border-t border-line pt-6">
           <button
             type="button"
@@ -312,6 +547,9 @@ export default function Studio() {
             Reset
           </button>
         </div>
+        <p className="sr-only" aria-live="polite">
+          {material.name} in {named.name}, shown {form.phrase}
+        </p>
       </aside>
     </div>
   );
