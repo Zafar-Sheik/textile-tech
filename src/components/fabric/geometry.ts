@@ -43,6 +43,7 @@ function sheet({ nu, nv, closed = false, point, skip }: SheetOptions) {
 
   // V: average distance travelled between rows. U: arc length along each row,
   // centred so any stretch is shared evenly between both edges.
+  const lengths = new Float32Array(rows);
   let travelled = 0;
   for (let j = 0; j < rows; j++) {
     if (j > 0) {
@@ -57,7 +58,18 @@ function sheet({ nu, nv, closed = false, point, skip }: SheetOptions) {
       uvs[(start + i) * 2] = along;
       uvs[(start + i) * 2 + 1] = -travelled;
     }
-    for (let i = 0; i < cols; i++) uvs[(start + i) * 2] -= along / 2;
+    lengths[j] = along;
+  }
+  // Tubes use one circumference for every ring, so warp threads (and stripes)
+  // run straight down the garment the way a cut panel's would.
+  const mean = lengths.reduce((sum, length) => sum + length, 0) / rows;
+  for (let j = 0; j < rows; j++) {
+    const stretch = closed && lengths[j] > 0 ? mean / lengths[j] : 1;
+    const half = (lengths[j] * stretch) / 2;
+    for (let i = 0; i < cols; i++) {
+      const k = (j * cols + i) * 2;
+      uvs[k] = uvs[k] * stretch - half;
+    }
   }
 
   const indices: number[] = [];

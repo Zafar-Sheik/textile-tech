@@ -13,6 +13,12 @@ import gsap from "gsap";
 import chroma from "chroma-js";
 import type { FormId } from "@/lib/forms";
 import { MATERIAL_BY_ID, type MaterialDef, type MaterialId } from "@/lib/materials";
+import {
+  DEFAULT_ACCENT,
+  PATTERN_BY_ID,
+  getPatternMask,
+  type PatternId,
+} from "@/lib/patterns";
 import { getWeaveMaps } from "@/lib/weave";
 import type { Lighting } from "@/store/useConfigurator";
 import { getFormGeometry } from "./geometry";
@@ -50,18 +56,94 @@ function getTextures(material: MaterialDef): FabricTextures {
 
 type Live = MaterialDef["drape"] & MaterialDef["surface"] & { ripple: number };
 
+const maskCache = new Map<PatternId, THREE.CanvasTexture>();
+
+function getMaskTexture(pattern: PatternId) {
+  const cached = maskCache.get(pattern);
+  if (cached) return cached;
+  const texture = new THREE.CanvasTexture(getPatternMask(pattern));
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 8;
+  texture.colorSpace = THREE.NoColorSpace;
+  maskCache.set(pattern, texture);
+  return texture;
+}
+
+interface ColorTween {
+  from: string;
+  to: string;
+  t: number;
+  applied: string;
+}
+
+/** Current colour of a tween, blended in OKLab so mid-way hues stay clean. */
+function tweened(c: ColorTween) {
+  return c.t >= 1 ? c.to : chroma.mix(c.from, c.to, c.t, "oklab").hex();
+}
+
+function retarget(c: ColorTween, color: string, onUpdate: () => void) {
+  c.from = c.applied || color;
+  c.to = color;
+  c.t = 0;
+  return gsap.to(c, { t: 1, duration: 0.45, ease: "power2.out", onUpdate });
+}
+
 /**
- * Drives one fabric surface. GSAP tweens the live values whenever the material
- * or colour changes; the frame loop copies them onto the Three.js material.
+ * Drives one fabric surface. GSAP tweens the live values whenever the
+ * material, colours or pattern change; the frame loop copies them onto the
+ * Three.js material.
  */
 function useFabricSurface(
   surfaceRef: RefObject<THREE.MeshPhysicalMaterial | null>,
-  material: MaterialDef,
-  color: string,
+  { material, color, pattern, accent }: Omit<ClothProps, "motion">,
 ) {
   const invalidate = useThree((state) => state.invalidate);
   const live = useRef<Live>({ ...material.drape, ...material.surface, ripple: 1 });
-  const tint = useRef({ from: color, to: color, t: 1, applied: "" });
+  const tint = useRef<ColorTween>({ from: color, to: color, t: 1, applied: "" });
+  const second = useRef<ColorTween>({ from: accent, to: accent, t: 1, applied: "" });
+  // Shader inputs for the pattern: the accent replaces the base colour
+  // wherever the mask says so, before the weave texture is applied.
+  const shader = useRef<{
+    uAccent: { value: THREE.Color };
+    uPatternMask: { value: THREE.Texture | null };
+    uPatternScale: { value: number };
+    uPatternMix: { value: number };
+  } | null>(null);
+  const tiles = useRef({ pattern: 1, material: material.repeat });
+
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface || shader.current) return;
+    const uniforms = {
+      uAccent: { value: new THREE.Color() },
+      uPatternMask: { value: null },
+      uPatternScale: { value: 1 },
+      uPatternMix: { value: 0 },
+    };
+    shader.current = uniforms;
+    surface.onBeforeCompile = (program) => {
+      Object.assign(program.uniforms, uniforms);
+      program.fragmentShader = program.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>
+uniform vec3 uAccent;
+uniform sampler2D uPatternMask;
+uniform float uPatternScale;
+uniform float uPatternMix;`,
+        )
+        .replace(
+          "vec4 diffuseColor = vec4( diffuse, opacity );",
+          `vec3 fabricTint = diffuse;
+#ifdef USE_MAP
+  fabricTint = mix( diffuse, uAccent, texture2D( uPatternMask, vMapUv * uPatternScale ).a * uPatternMix );
+#endif
+vec4 diffuseColor = vec4( fabricTint, opacity );`,
+        );
+    };
+    surface.customProgramCacheKey = () => "fabric-pattern";
+    surface.needsUpdate = true;
+  }, [surfaceRef]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -71,6 +153,7 @@ function useFabricSurface(
       surface.normalMap = textures.normalMap;
       surface.needsUpdate = true;
     }
+    tiles.current.material = material.repeat;
     const state = live.current;
     const morph = gsap.to(state, {
       ...material.drape,
@@ -92,31 +175,60 @@ function useFabricSurface(
   }, [material, surfaceRef, invalidate]);
 
   useEffect(() => {
-    const state = tint.current;
-    state.from = state.applied || color;
-    state.to = color;
-    state.t = 0;
-    const tween = gsap.to(state, {
-      t: 1,
-      duration: 0.45,
-      ease: "power2.out",
-      onUpdate: invalidate,
-    });
+    const tween = retarget(tint.current, color, invalidate);
     return () => {
       tween.kill();
     };
   }, [color, invalidate]);
 
+  useEffect(() => {
+    const tween = retarget(second.current, accent, invalidate);
+    return () => {
+      tween.kill();
+    };
+  }, [accent, invalidate]);
+
+  // Fade the old pattern out, swap the mask, fade the new one in.
+  useEffect(() => {
+    const uniforms = shader.current;
+    if (!uniforms) return;
+    const swap = () => {
+      uniforms.uPatternMask.value = getMaskTexture(pattern);
+      tiles.current.pattern = PATTERN_BY_ID[pattern].scale;
+    };
+    const timeline = gsap.timeline({ onUpdate: invalidate });
+    if (uniforms.uPatternMask.value) {
+      timeline.to(uniforms.uPatternMix, { value: 0, duration: 0.2, ease: "power1.in" });
+    }
+    timeline.call(swap);
+    if (pattern !== "solid") {
+      timeline.to(uniforms.uPatternMix, { value: 1, duration: 0.4, ease: "power2.out" });
+    }
+    return () => {
+      timeline.kill();
+    };
+  }, [pattern, invalidate]);
+
   useFrame(() => {
     const surface = surfaceRef.current;
     if (!surface) return;
-    // Colour, blended in OKLab so mid-transition hues stay clean.
     const c = tint.current;
-    const hex = c.t >= 1 ? c.to : chroma.mix(c.from, c.to, c.t, "oklab").hex();
+    const hex = tweened(c);
     if (hex !== c.applied) {
       c.applied = hex;
       surface.color.set(hex);
       surface.sheenColor.set(chroma(hex).brighten(1.1).desaturate(0.4).hex());
+    }
+    const uniforms = shader.current;
+    if (uniforms) {
+      const a = second.current;
+      const accentHex = tweened(a);
+      if (accentHex !== a.applied) {
+        a.applied = accentHex;
+        uniforms.uAccent.value.set(accentHex);
+      }
+      // The weave texture's UVs are already scaled by the material's repeat.
+      uniforms.uPatternScale.value = tiles.current.pattern / tiles.current.material;
     }
     const s = live.current;
     surface.roughness = s.roughness;
@@ -134,14 +246,16 @@ function useFabricSurface(
 interface ClothProps {
   material: MaterialDef;
   color: string;
+  pattern: PatternId;
+  accent: string;
   motion: boolean;
 }
 
 /** A hanging length of cloth whose folds follow the material's drape values. */
-function Drape({ material, color, motion }: ClothProps) {
+function Drape({ motion, ...fabric }: ClothProps) {
   const surfaceRef = useRef<THREE.MeshPhysicalMaterial>(null);
   const clothRef = useRef<THREE.Mesh<THREE.PlaneGeometry>>(null);
-  const live = useFabricSurface(surfaceRef, material, color);
+  const live = useFabricSurface(surfaceRef, fabric);
   const clock = useRef(0);
 
   useFrame((_, delta) => {
@@ -244,13 +358,12 @@ function Drape({ material, color, motion }: ClothProps) {
 /** A garment or object. The mesh is built once; only the surface is animated. */
 function Form({
   form,
-  material,
-  color,
   motion,
+  ...fabric
 }: ClothProps & { form: Exclude<FormId, "drape"> }) {
   const surfaceRef = useRef<THREE.MeshPhysicalMaterial>(null);
   const groupRef = useRef<THREE.Group>(null);
-  const live = useFabricSurface(surfaceRef, material, color);
+  const live = useFabricSurface(surfaceRef, fabric);
   const invalidate = useThree((state) => state.invalidate);
   const entrance = useRef({ t: 0 });
   const clock = useRef(0);
@@ -357,6 +470,9 @@ function SnapshotBridge({ onSnapshot }: { onSnapshot: (snapshot: Snapshot | null
 export interface FabricSceneProps {
   materialId: MaterialId;
   color: string;
+  pattern?: PatternId;
+  /** Second colour, used by patterns. */
+  accent?: string;
   form?: FormId;
   lighting?: Lighting;
   /** Moving air and slow turning. When off, frames render only on change. */
@@ -369,6 +485,8 @@ export interface FabricSceneProps {
 export default function FabricScene({
   materialId,
   color,
+  pattern = "solid",
+  accent = DEFAULT_ACCENT,
   form = "drape",
   lighting = "studio",
   motion = true,
@@ -378,7 +496,7 @@ export default function FabricScene({
   const wrapper = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(true);
   const [dpr, setDpr] = useState(MAX_DPR);
-  const material = MATERIAL_BY_ID[materialId];
+  const fabric = { material: MATERIAL_BY_ID[materialId], color, pattern, accent, motion };
 
   // Stop rendering entirely while the canvas is scrolled out of view.
   useEffect(() => {
@@ -411,9 +529,9 @@ export default function FabricScene({
         <FitCamera />
         <Lights lighting={lighting} />
         {form === "drape" ? (
-          <Drape material={material} color={color} motion={motion} />
+          <Drape {...fabric} />
         ) : (
-          <Form key={form} form={form} material={material} color={color} motion={motion} />
+          <Form key={form} form={form} {...fabric} />
         )}
         {onSnapshot && <SnapshotBridge onSnapshot={onSnapshot} />}
         {interactive && (

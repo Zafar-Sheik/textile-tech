@@ -31,7 +31,13 @@ import {
   isMaterialId,
   randomMaterial,
 } from "@/lib/materials";
-import { useConfigurator, type Lighting } from "@/store/useConfigurator";
+import { PATTERNS, PATTERN_BY_ID, isPatternId } from "@/lib/patterns";
+import {
+  currentLook,
+  useConfigurator,
+  type Lighting,
+  type Look,
+} from "@/store/useConfigurator";
 
 gsap.registerPlugin(useGSAP);
 
@@ -96,6 +102,8 @@ export default function Studio() {
   const materialId = useConfigurator((s) => s.materialId);
   const colors = useConfigurator((s) => s.colors);
   const formId = useConfigurator((s) => s.formId);
+  const patternId = useConfigurator((s) => s.patternId);
+  const accent = useConfigurator((s) => s.accent);
   const lighting = useConfigurator((s) => s.lighting);
   const motion = useConfigurator((s) => s.motion);
   const looks = useConfigurator((s) => s.looks);
@@ -103,6 +111,8 @@ export default function Studio() {
     setMaterial,
     setColor,
     setForm,
+    setPattern,
+    setAccent,
     setLighting,
     setMotion,
     saveLook,
@@ -114,9 +124,17 @@ export default function Studio() {
   const material = MATERIAL_BY_ID[materialId];
   const form = FORM_BY_ID[formId];
   const color = colors[materialId];
+  const patterned = patternId !== "solid";
+  // With a pattern on, the colour tools can edit either of its two colours.
+  const [target, setTarget] = useState<"base" | "accent">("base");
+  const editingAccent = patterned && target === "accent";
+  const active = editingAccent ? accent : color;
+  const pick = editingAccent ? setAccent : setColor;
+  // A second look held next to the live one for comparison.
+  const [pinned, setPinned] = useState<Look | null>(null);
   // The 3D cloth follows the picker immediately; derived swatches may lag a frame.
-  const settled = useDeferredValue(color);
-  const named = useMemo(() => colorName(settled), [settled]);
+  const settled = useDeferredValue(active);
+  const named = useMemo(() => colorName(color), [color]);
   const tones = useMemo(() => tonalRange(settled), [settled]);
   const partners = useMemo(() => harmonies(settled), [settled]);
 
@@ -145,16 +163,28 @@ export default function Studio() {
     if (isValidHex(c)) store.setColor(c);
     const v = params.get("v");
     if (isFormId(v)) store.setForm(v);
+    const pattern = params.get("p");
+    if (isPatternId(pattern)) store.setPattern(pattern);
+    const a = `#${params.get("a") ?? ""}`;
+    if (isValidHex(a)) store.setAccent(a);
   }, []);
+
+  const query = useMemo(() => {
+    const params = new URLSearchParams({ m: materialId, c: color.slice(1), v: formId });
+    if (patterned) {
+      params.set("p", patternId);
+      params.set("a", accent.slice(1));
+    }
+    return params.toString();
+  }, [materialId, color, formId, patterned, patternId, accent]);
 
   // Keep the address bar shareable. Debounced: browsers throttle history calls.
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const query = new URLSearchParams({ m: materialId, c: color.slice(1), v: formId });
       window.history.replaceState(null, "", `?${query}`);
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [materialId, color, formId]);
+  }, [query]);
 
   useGSAP(
     () => {
@@ -192,7 +222,6 @@ export default function Studio() {
   };
 
   const share = async () => {
-    const query = new URLSearchParams({ m: materialId, c: color.slice(1), v: formId });
     const url = `${window.location.origin}${window.location.pathname}?${query}`;
     try {
       await navigator.clipboard.writeText(url);
@@ -211,6 +240,21 @@ export default function Studio() {
     link.click();
   };
 
+  const compare = () => {
+    setPinned(pinned ? null : currentLook(useConfigurator.getState()));
+  };
+
+  const swap = () => {
+    if (!pinned) return;
+    const live = currentLook(useConfigurator.getState());
+    applyLook(pinned);
+    setPinned(live);
+  };
+
+  const pinnedMaterial = pinned && MATERIAL_BY_ID[pinned.materialId];
+  const paneLabel =
+    "pointer-events-none absolute left-5 top-[4.5rem] text-sm lg:left-8 lg:top-24";
+
   const toolButton =
     "rounded-full border border-ink/25 bg-paper/60 px-3.5 py-1.5 text-xs backdrop-blur transition-colors hover:border-ink";
 
@@ -221,19 +265,56 @@ export default function Studio() {
     >
       {/* Stage */}
       <section
-        className="relative h-[60dvh] min-h-[400px] overflow-hidden transition-colors duration-700 lg:h-auto"
+        className={`relative min-h-[400px] overflow-hidden transition-colors duration-700 lg:h-auto ${
+          pinned ? "h-[78dvh]" : "h-[60dvh]"
+        }`}
         style={{ background: stageTint(color) }}
         aria-label="Live fabric preview"
       >
-        <div className="absolute inset-0 cursor-grab active:cursor-grabbing lg:left-[8%]">
-          <FabricCanvas
-            materialId={materialId}
-            color={color}
-            form={formId}
-            lighting={lighting}
-            motion={motion}
-            onSnapshot={onSnapshot}
-          />
+        <div
+          className={`absolute inset-0 ${
+            pinned ? "grid grid-rows-2 lg:grid-cols-2 lg:grid-rows-1" : "lg:left-[8%]"
+          }`}
+        >
+          {pinned && pinnedMaterial && (
+            <div
+              key="pinned"
+              className="relative h-full min-h-0 cursor-grab border-b border-ink/15 active:cursor-grabbing lg:border-b-0 lg:border-r"
+              style={{ background: stageTint(pinned.color) }}
+            >
+              <FabricCanvas
+                materialId={pinned.materialId}
+                color={pinned.color}
+                pattern={pinned.patternId}
+                accent={pinned.accent}
+                form={pinned.formId}
+                lighting={lighting}
+                motion={motion}
+              />
+              <p className={paneLabel}>
+                <span className="eyebrow block">Pinned</span>
+                {pinnedMaterial.name} · {colorName(pinned.color).name}
+              </p>
+            </div>
+          )}
+          <div key="live" className="relative h-full min-h-0 cursor-grab active:cursor-grabbing">
+            <FabricCanvas
+              materialId={materialId}
+              color={color}
+              pattern={patternId}
+              accent={accent}
+              form={formId}
+              lighting={lighting}
+              motion={motion}
+              onSnapshot={onSnapshot}
+            />
+            {pinned && (
+              <p className={paneLabel}>
+                <span className="eyebrow block">Editing</span>
+                {material.name} · {named.name}
+              </p>
+            )}
+          </div>
         </div>
 
         <header className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between gap-3 p-5 lg:p-8">
@@ -249,19 +330,36 @@ export default function Studio() {
                 flash(setSaved);
               }}
             >
-              {saved ? "Saved" : "Save look"}
+              {saved ? "Saved" : "Save"}
             </button>
             <button type="button" className={toolButton} onClick={share}>
               {copied ? "Link copied" : "Share"}
             </button>
-            <button type="button" className={toolButton} onClick={download}>
+            <button
+              type="button"
+              className={`${toolButton} hidden sm:block`}
+              onClick={download}
+            >
               Snapshot
+            </button>
+            {pinned && (
+              <button type="button" className={toolButton} onClick={swap}>
+                Swap
+              </button>
+            )}
+            <button
+              type="button"
+              aria-pressed={pinned !== null}
+              className={pinned ? `${toolButton} !bg-ink !text-paper` : toolButton}
+              onClick={compare}
+            >
+              {pinned ? "Close" : "Compare"}
             </button>
           </div>
         </header>
 
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-6 p-3 lg:p-8">
-          <div className="hidden lg:block">
+          <div className={pinned ? "hidden" : "hidden lg:block"}>
             <p className="eyebrow mb-1">Now showing</p>
             <div className="overflow-hidden">
               <h1
@@ -284,7 +382,7 @@ export default function Studio() {
           <div
             role="group"
             aria-label="Shape to preview on"
-            className="pointer-events-auto flex max-w-full gap-1 overflow-x-auto rounded-full border border-ink/15 bg-paper/75 p-1 backdrop-blur"
+            className="pointer-events-auto ml-auto flex max-w-full gap-1 overflow-x-auto rounded-full border border-ink/15 bg-paper/75 p-1 backdrop-blur"
           >
             {FORMS.map((f) => (
               <Pill key={f.id} active={f.id === formId} onClick={() => setForm(f.id)}>
@@ -373,29 +471,59 @@ export default function Studio() {
             </h2>
             <span className="text-xs text-muted">Curated range</span>
           </div>
+          {patterned && (
+            <div
+              role="group"
+              aria-label="Colour to edit"
+              className="mb-5 grid grid-cols-2 gap-1 rounded-full border border-line p-1"
+            >
+              {(
+                [
+                  ["base", "Base", color],
+                  ["accent", "Pattern", accent],
+                ] as const
+              ).map(([id, label, hex]) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={target === id}
+                  onClick={() => setTarget(id)}
+                  className={`flex items-center justify-center gap-2 rounded-full py-2 text-sm transition-colors ${
+                    target === id ? "bg-ink text-paper" : "hover:bg-ink/10"
+                  }`}
+                >
+                  <span
+                    className="h-3.5 w-3.5 rounded-full border border-paper/60"
+                    style={{ background: hex }}
+                  />
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="grid grid-cols-8 gap-3">
             {material.palette.map((swatch) => (
               <Chip
                 key={swatch.hex}
                 hex={swatch.hex}
                 label={swatch.name}
-                selected={swatch.hex === color}
-                onPick={setColor}
+                selected={swatch.hex === active}
+                onPick={pick}
               />
             ))}
           </div>
 
           <div className="picker mt-6">
-            <HexColorPicker color={color} onChange={setColor} />
+            <HexColorPicker color={active} onChange={pick} />
             <label className="mt-4 flex items-center gap-3 rounded-xl border border-line bg-paper px-3 py-2">
               <span
                 className="h-7 w-7 shrink-0 rounded-full border border-line"
-                style={{ background: color }}
+                style={{ background: active }}
               />
               <span className="eyebrow">Hex</span>
               <HexColorInput
-                color={color}
-                onChange={setColor}
+                color={active}
+                onChange={pick}
                 prefixed
                 aria-label="Hex colour"
                 className="w-full bg-transparent font-mono text-sm uppercase outline-none"
@@ -412,7 +540,7 @@ export default function Studio() {
                   type="button"
                   aria-label={`Tone ${index + 1} of ${tones.length}, ${tone}`}
                   title={tone}
-                  onClick={() => setColor(tone)}
+                  onClick={() => pick(tone)}
                   className="h-10 flex-1 transition-[flex-grow] duration-300 hover:grow-[1.8]"
                   style={{ background: tone }}
                 />
@@ -427,7 +555,7 @@ export default function Studio() {
                 <button
                   key={index}
                   type="button"
-                  onClick={() => setColor(partner.hex)}
+                  onClick={() => pick(partner.hex)}
                   className="rounded-xl border border-line px-2 pb-1.5 pt-6 text-left text-[11px] transition-transform duration-200 hover:-translate-y-0.5"
                   style={{ background: partner.hex, color: readableOn(partner.hex) }}
                 >
@@ -438,9 +566,56 @@ export default function Studio() {
           </div>
         </section>
 
+        <section data-enter aria-labelledby="pattern-heading">
+          <div className="mb-4 flex items-baseline justify-between">
+            <h2 id="pattern-heading" className="eyebrow">
+              03 · Pattern
+            </h2>
+            <span className="text-xs text-muted">{PATTERN_BY_ID[patternId].name}</span>
+          </div>
+          <div className="grid grid-cols-4 gap-x-2.5 gap-y-3">
+            {PATTERNS.map((pattern) => {
+              const selected = pattern.id === patternId;
+              return (
+                <button
+                  key={pattern.id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => {
+                    setPattern(pattern.id);
+                    setTarget(pattern.id === "solid" ? "base" : "accent");
+                  }}
+                  className="group text-left"
+                >
+                  <span
+                    className={`block overflow-hidden rounded-xl border-2 p-0.5 transition-colors ${
+                      selected ? "border-ink" : "border-transparent group-hover:border-line"
+                    }`}
+                  >
+                    <Swatch
+                      material={material}
+                      color={color}
+                      pattern={pattern.id}
+                      accent={accent}
+                      className="block aspect-[4/3] w-full rounded-[9px]"
+                    />
+                  </span>
+                  <span
+                    className={`mt-1 block text-center text-xs ${
+                      selected ? "font-medium text-ink" : "text-muted"
+                    }`}
+                  >
+                    {pattern.name}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
         <section data-enter aria-labelledby="light-heading">
           <h2 id="light-heading" className="eyebrow mb-4">
-            03 · Light &amp; motion
+            04 · Light &amp; motion
           </h2>
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-4">
             <div
@@ -507,12 +682,17 @@ export default function Studio() {
                       <Swatch
                         material={saved}
                         color={look.color}
+                        pattern={look.patternId}
+                        accent={look.accent}
                         className="h-11 w-11 shrink-0 rounded-lg"
                       />
                       <span className="min-w-0 text-xs leading-tight">
                         <span className="block truncate text-sm">{saved.name}</span>
                         <span className="block truncate text-muted">
                           {FORM_BY_ID[look.formId].name}
+                          {look.patternId && look.patternId !== "solid"
+                            ? ` · ${PATTERN_BY_ID[look.patternId].name}`
+                            : ""}
                         </span>
                       </span>
                     </button>

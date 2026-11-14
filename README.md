@@ -19,6 +19,8 @@ draped length of cloth updates instantly — weave, sheen and fold included.
 
 - 16 materials, each with a curated palette, a free colour picker, tonal range and pairings
 - 6 shapes to preview on: hanging drape, flat cloth, T-shirt, trousers, skirt, cushion
+- 8 patterns (stripe, pinstripe, gingham, tartan, windowpane, dots, chevron) in a second colour
+- Side-by-side comparison of a pinned look and the one being edited
 - Studio, daylight and evening lighting
 - Save looks (kept in `localStorage`), copy a share link, download a PNG snapshot
 - Motion toggle; follows the system "reduce motion" setting on first load
@@ -27,6 +29,8 @@ draped length of cloth updates instantly — weave, sheen and fold included.
 
 - `src/lib/materials.ts` — the materials: palette, weave, drape and surface parameters.
 - `src/lib/forms.ts` — the list of shapes.
+- `src/lib/patterns.ts` — patterns as masks; a small shader patch blends base and
+  accent colour through the mask, so recolouring never rebuilds a texture.
 - `src/lib/weave.ts` — procedural, tileable weave generator. Produces a normal map
   and albedo map per weave plus a small 2D preview, so no image assets are needed.
 - `src/components/fabric/geometry.ts` — parametric geometry for the garments and objects.

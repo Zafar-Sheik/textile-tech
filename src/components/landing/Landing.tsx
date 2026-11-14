@@ -10,22 +10,29 @@ import Swatch from "@/components/Swatch";
 import Wordmark from "@/components/Wordmark";
 import { stageTint } from "@/lib/color";
 import { FORMS, FORM_BY_ID, type FormId } from "@/lib/forms";
+import type { PatternId } from "@/lib/patterns";
 import { MATERIALS, type MaterialId } from "@/lib/materials";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
 
 /** The looks the hero cloth cycles through. */
-const SHOWREEL: { id: MaterialId; swatch: number; form: FormId }[] = [
+const SHOWREEL: {
+  id: MaterialId;
+  swatch: number;
+  form: FormId;
+  pattern?: PatternId;
+  accent?: string;
+}[] = [
   { id: "velvet", swatch: 0, form: "drape" },
-  { id: "jersey", swatch: 3, form: "shirt" },
+  { id: "jersey", swatch: 4, form: "shirt", pattern: "stripe", accent: "#f4f3ef" },
   { id: "silk", swatch: 4, form: "skirt" },
   { id: "denim", swatch: 1, form: "trousers" },
-  { id: "linen", swatch: 0, form: "cushion" },
+  { id: "cotton", swatch: 6, form: "cushion", pattern: "gingham", accent: "#f1ece2" },
   { id: "satin", swatch: 2, form: "drape" },
   { id: "corduroy", swatch: 0, form: "trousers" },
   { id: "lame", swatch: 0, form: "skirt" },
   { id: "tweed", swatch: 3, form: "flat" },
-  { id: "flannel", swatch: 0, form: "shirt" },
+  { id: "flannel", swatch: 0, form: "shirt", pattern: "tartan", accent: "#1f2f2c" },
 ];
 
 const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen", "Twenty"];
@@ -39,11 +46,11 @@ const STEPS = [
   },
   {
     title: "Dye it any colour",
-    body: "Start from a range curated for that material, or dial in any shade. Each fabric remembers the colour you gave it.",
+    body: "Start from a range curated for that material, or dial in any shade. Add stripes, checks or dots in a second colour.",
   },
   {
     title: "Try it on a shape",
-    body: `See it ${FORM_COUNT} ways, from a hanging drape to a T-shirt, trousers or a cushion, in studio, daylight or evening light.`,
+    body: `See it ${FORM_COUNT} ways, from a hanging drape to a T-shirt, trousers or a cushion, in studio, daylight or evening light. Pin one look and compare it with another.`,
   },
 ];
 
@@ -187,6 +194,8 @@ export default function Landing() {
             materialId={current.id}
             color={swatch.hex}
             form={current.form}
+            pattern={current.pattern}
+            accent={current.accent}
             interactive={false}
           />
           <div className="absolute bottom-0 right-0 overflow-hidden text-right">
